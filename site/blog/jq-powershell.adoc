@@ -129,7 +129,7 @@ PS1> '{"key1":{"key2":"value1"}}' | fromjson | tojson
 ```
 
 NOTE: Text surrounded in quotes is interpreted as a string expression so there's no need to use `echo` here as you might in `bash`.
-You can if you like, of course.
+(You can if you like, of course.)
 
 Alternately, you can use the `Compress` switch to remove unnecessary whitespace and indentation.
 
@@ -139,7 +139,7 @@ PS1> echo '{ "key1": { "key2": "value1" }}' | fromjson | tojson -c
 ```
 
 ****
-TIP: `ConvertTo-Json` has a default serialisation depth of two.
+TIP: `ConvertTo-Json` has a miserly default serialisation depth of two.
 If you exceed it, you'll see a warning in the console which you can override with the `Depth` parameter.
 
 ```
@@ -163,6 +163,21 @@ PS1> @{ one = @{ two = @{ three = @{} } } } | tojson -d 3
   }
 }
 ```
+
+The `$PSDefaultParameterValues` global can be used to override default parameter values for any command in a session.
+
+```
+PS1> $PSDefaultParameterValues['tojson:depth'] = 3
+
+PS1> @{ one = @{ two = @{ three = @{}  } } } | tojson
+{
+  "one": {
+    "two": {
+      "three": {}
+    }
+  }
+}
+```
 ****
 
 
@@ -173,7 +188,7 @@ We'll use the Github repository API for sample data and https://curl.se/[`curl`]
 If you're stuck on a very old version of Windows, without `curl` installed, then you could use PowerShell's native
 https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/invoke-webrequest[`Invoke‑WebRequest`] (`iwr`) or
 https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/invoke-restmethod[`Invoke‑RestMethod`] (`irm`) instead.
-(`irm` would even parse the JSON responses for us automatically.)
+`irm` would also parse the JSON responses for us without needing `fromjson`.
 
 The string `curl` returns looks like this:
 
@@ -210,9 +225,9 @@ PS1> curl https://api.github.com/repos/stedolan/jq
 
 Powershell's `Select-Object` (`select`) can project objects as they flow through the
 https://docs.microsoft.com/en-us/powershell/scripting/learn/ps101/04-pipelines[pipeline].
-This is particularly useful for processing collections, as we'll see later, but it also works for single objects.
+This is particularly useful for processing collections, as we'll see shortly, but it also works for single objects.
 
-TIP: The `select` command is so common in PowerShell that you might consider aliasing it to something more pithy like `s`.
+TIP: The `select` command is so common in PowerShell that you might consider aliasing it to something pithier like `s`.
 
 Here's how we could select just the `name` property from the source object.
 
@@ -332,7 +347,7 @@ PS1> (curl -s https://api.github.com/repos/stedolan/jq | fromjson).owner.login
 stedolan
 ```
 
-Or assign the output of `fromjson` to a variable in order to explore the object using PSReadLine's interactive autocompletion.
+Or assign the output of `fromjson` to a variable to explore the object using PSReadLine's interactive autocompletion.
 
 ++++
 <div class="listingblock">
@@ -555,7 +570,7 @@ visibility of wiki pages                          2340
 ...
 ```
 
-Transforming our new collection to JSON is - as you might imagine - as simple as piping into our `tojson` alias.
+Transforming our new collection to JSON is as simple as piping into our `tojson` alias.
 
 ```
 PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
@@ -585,7 +600,7 @@ PS1>> select title, number | tojson
 ]
 ```
 
-We can actually choose from a number of different output formats.
+We can actually choose from several output formats.
 
 ```
 PS1> $issues = curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
@@ -641,7 +656,13 @@ PS1> $issues | ConvertTo-Xml -As String -NoTypeInformation
 == Sorting
 
 To sort a simple collection, just pipe it straight into
-https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/sort-object[`Sort-Object`] (`sort`).
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/sort-object[`Sort-Object`]
+(`sort` on Windows).
+
+NOTE: `Sort-Object` isn't aliased to `sort` on Mac and Linux by default to prevent confusion with 
+https://pubs.opengroup.org/onlinepubs/9699919799/utilities/sort.html[Posix sort].
+You might choose to add the alias yourself, since native `Sort‑Object` is usually the better choice in PowerShell.
+We'll use the shorter version in the examples below.
 
 ```
 PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
@@ -712,10 +733,11 @@ number
 
 == Grouping
 
-Having used `sort`, it should be easy to guess how
+Having used `sort`, it's easy to guess how
 https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/group-object[`Group-Object`] (`group`) works.
 
-To group a collection of primitives (or objects of https://docs.microsoft.com/en-us/dotnet/api/system.icomparable[`IComparable`]), pipe them into `group`.
+To group a collection of primitives (or objects of https://docs.microsoft.com/en-us/dotnet/api/system.icomparable[`IComparable`]),
+pipe them into `group`.
 This returns a new array of objects with the properties `Count`, `Name` and `Group`.
 The `Group` property contains the original items that make up each group.
 
@@ -767,7 +789,7 @@ PS1>> group -prop {$_.user.login} -AsHashTable | tojson -d 3
     {
       "url": "https://api.github.com/repos/stedolan/jq/issues/2327",
       "repository_url": "https://api.github.com/repos/stedolan/jq",
-      "labels_url": "https://api.github.com/repos/stedolan/jq/issues/2327/labels{/name}",
+      "labels_url": "https://api.github.com/repos/stedolan/jq/issues/2327/labels/name",
       "comments_url": "https://api.github.com/repos/stedolan/jq/issues/2327/comments",
       "events_url": "https://api.github.com/repos/stedolan/jq/issues/2327/events",
       "html_url": "https://github.com/stedolan/jq/issues/2327",
@@ -830,11 +852,12 @@ Minimum                Maximum
 21/05/2021 7:17:39 PM  27/10/2021 5:20:17 PM
 ```
 
-Obviously, the statistical measurements - average, sum, std deviation - only really make sense for numerical data.
+Obviously, the statistical measurements - average, sum and standard deviation -
+only make sense for numerical data.
 
 ```
 PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
-PS1>> select {$_.reactions.total_count} | measure -AllStats *
+PS1>> measure {$_.reactions.total_count} -AllStats
 
 Count             : 30
 Average           : 0.8
@@ -950,11 +973,9 @@ FullName
 
 == Conclusion
 
-We've seen how PowerShell can do the same sorts of things as `jq` and how it can help with everyday data munging more generally.
-If you have a .NET background then stick around for the bonus section -
+We've seen how PowerShell can do the same sorts of things as `jq` and how it can help with data munging more generally.
+If you have a .NET background then stick around -
 we'll look briefly at doing some of the same tasks via the BCL instead of PowerShell native equivalents.
-
-{empty} +
 
 .Postscript: Manipulating data with .NET
 [%collapsible]
@@ -998,8 +1019,9 @@ title                                                       number
 Use a regex to parse ISO8601 dates                            2296
 ```
 
-Notice that the predicate is given using a PowerShell script block -
-an anonymous function delimited by curly braces - and an ugly cast to `[Predicate[Object]]`.
+Notice that the predicate is given using a
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_script_blocks[script block]
+- an anonymous function delimited by curly braces - and an ugly cast to `[Predicate[Object]]`.
 
 Here's the same example using `IEnumerable.Where()` instead of `Array.FindAll`.
 
@@ -1019,7 +1041,7 @@ Alternatively, you can lean on PowerShell's autocompletion which will offer to c
 
 ```
 PS1> using namespace System.Linq
-PS1> [Enumerable]::Where(PS1>> $a, [Func[Object,bool]] { $args[0].number -gt 2295 })
+PS1> [Enumerable]::Where($a, [Func[Object,bool]] { $args[0].number -gt 2295 })
 
 title                                                       number
 -----                                                       ------
@@ -1044,8 +1066,9 @@ PS1>>  $a, 0, [Func [int, object, int]] { $args[0] + $args[1].comments })
 ```
 
 If you find yourself having to cast to the same type repeatedly, you can save some typing by adding a type alias.
-PowerShell refers to these as https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_type_accelerators['type accelerators'] -
-the `[array]` above is a good example.
+PowerShell refers to these as
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_type_accelerators['type accelerators']
+- the `[array]` above is a good example of a built in accelerator.
 Here we add an accelerator for the predicate type, `[Func [Object, bool]]` and use it with `Enumerable.First`.
 
 ```
@@ -1058,7 +1081,7 @@ title                              number
 Use a regex to parse ISO8601 dates   2296
 ```
 
-There's a great https://www.red-gate.com/simple-talk/development/dotnet-development/high-performance-powershell-linq[reference]
+For a deeper dive, check out this https://www.red-gate.com/simple-talk/development/dotnet-development/high-performance-powershell-linq[reference]
 by Michael Sorens demonstrating various LINQ methods in PowerShell along with comparisons to PowerShell native equivalents.
 ====
 

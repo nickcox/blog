@@ -67,7 +67,7 @@ a:hover {
 }
 
 body {
-  max-width: 46em;
+  max-width: 48em;
 }
 
 h1.float {
@@ -83,9 +83,6 @@ h1 {
   body {
     font-size: 110%;
   }
-  .paragraph {
-    text-align: justify;
-  }
 }
 
 .heading-anchor {
@@ -100,7 +97,7 @@ h2:hover .heading-anchor {
 }
 
 code, kbd, pre, samp, tt, var {
-  font-size: .95rem;
+  font-size: 1rem;
 }
 
 .listingblock pre[class] {
