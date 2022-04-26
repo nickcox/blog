@@ -1,0 +1,3 @@
+pushd $PSScriptRoot
+soupault
+popd

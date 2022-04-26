@@ -1,0 +1,93 @@
+[settings]
+build_dir = "build"
+site_dir = "site"
+strict = true
+verbose = true
+
+# Pages with other extensions are considered static assets
+# and copied to build/ unchanged
+page_file_extensions = ["htm", "html", "md", "rst", "adoc"]
+
+# Files with these extensions are ignored.
+ignore_extensions = ["draft"]
+
+# Treat files as content to insert in the template,
+# unless they have an <html> element in them.
+complete_page_selector = "html"
+generator_mode = true
+
+default_content_action = "append_child"
+default_content_selector = "main"
+default_template_file = "templates/main.html"
+
+plugin_dirs = ["plugins"]
+plugin_discovery = true
+
+[preprocessors]
+adoc = 'asciidoctor -a icons=image -a icontype=svg -a iconsdir=../../icons -a imagesdir=../../images -a source-highlighter=pygments --embed -o -'
+
+[index.fields.title]
+selector = ["h1"]
+
+[index.fields.date]
+extract_attribute = "datetime"
+fallback_to_content = true
+selector = ["#post-date p "]
+
+[index.fields.excerpt]
+selector = ["#post-excerpt p", "p"]
+
+[index]
+index = true
+sort_by = "date"
+sort_descending = true
+sort_type = "calendar"
+
+date_formats = ["%F"]
+
+[index.views.blog]
+index_item_template = """
+    <h2><a href="{{url}}">{{title}}</a></h2>
+    <p><i>{{date}}</i></p>
+    <p>{{excerpt}}</p>
+    <a href="{{url}}">Read more</a>
+  """
+index_selector = "#blog-index"
+
+[widgets.replace-prompts]
+replacement = "❯"
+selector = "code .tok-gp"
+widget = "replace-prompts"
+
+[widgets.replace-prompts-continuations]
+replacement = "❯"
+selector = "code .tok-p"
+widget = "replace-prompts"
+
+[widgets.relativize]
+widget = "relative_links"
+
+[widgets.table-of-contents]
+action = "insert_after"
+heading_link_class = "heading-anchor"
+heading_links = true
+heading_links_append = true
+min_level = 2
+selector = ".title"
+toc_list_class = "toc"
+widget = "toc"
+
+[widgets.page-title]
+force = true
+widget = "title"
+
+[widgets.footer]
+action = "prepend_child"
+file = "templates/footer.html"
+selector = ["#footer"]
+widget = "include"
+
+[widgets.header]
+file = "templates/header.html"
+selector = ["header"]
+widget = "include"

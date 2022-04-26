@@ -1,0 +1,1066 @@
+:source-language: ps1con
+
+[float]
+= You probably don't need jq
+image::dataflow.jpg[meaningless image]  
+
+[float]
+= ... (in PowerShell) 
+
+[#post-date]
+2021-11-07
+  
+[#post-excerpt]
+This article demonstrates how to query and manipulate JSON data with PowerShell.
+It's inspired by an https://earthly.dev/blog/jq-select/[introduction to jq] on the blog of Adam Gordon Bell.
+That piece is worth a read even if you're already au fait with `jq` as it's a good primer for the examples shown here.
+  +
+  +
+All of the code samples should be ready to paste into a terminal on macOS, Windows or Linux with a recent version of PowerShell installed.
+  +
+  +
+The general approach is super simple:
+parse the source data to PowerShell objects, process it and - optionally - convert back to JSON at the end.
+We could use the same technique for data from CSV files, XML, relational databases or anywhere else.
+That makes this workflow really powerful; you only need learn it once and *it will work for pretty much any kind of data*.
+
+''''
+
+.Contents 
+****
+:toc:
+****
+
+''''
+
+== JSON in PowerShell
+
+There are three built-in commands for working with JSON directly:
+
+```
+PS1> help json | select Name, Synopsis
+
+Name              Synopsis
+----              --------
+ConvertFrom-Json  Converts a JSON-formatted string to a custom object or a hash table.
+ConvertTo-Json    Converts an object to a JSON-formatted string.
+Test-Json         Tests whether a string is a valid JSON document
+```
+
+TIP: If the `help` function is missing on your machine or if the help content is incomplete then run the `Update-Help` command.
+
+We'll only need the first two: `ConvertFrom-Json` and `ConvertTo-Json`.
+`Test-Json` does just what you'd expect, though - it checks whether a given string is a valid JSON document.
+
+Most commands in PowerShell do what you expect thanks to its system of `Verb-Noun` command names and its Orwellian list of
+https://docs.microsoft.com/en-us/powershell/scripting/developer/cmdlet/approved-verbs-for-windows-powershell-commands[_Approved Verbs_].
+People often find this verbosity off-putting at first; the upside is that it makes PowerShell commands very discoverable.
+Combined with pervasive autocompletion and sensible built-in aliases, the wordy names rarely slow one down in practice.
+
+`ConvertFrom-Json` and its counterpart `ConvertTo-Json` are exceptions, however.
+Neither comes with a default alias and autocomplete needs to get to the `'J'` of `'Json'` before it knows you're not after
+one of the other conversion commands listed below.
+
+```
+PS1> help convert[ft]* | select name, synopsis
+
+Name                      Synopsis
+----                      --------
+ConvertFrom-Csv           Converts object properties in comma-separated value (CSV)…
+ConvertFrom-Json          Converts a JSON-formatted string to a custom object or a …
+ConvertFrom-Markdown      Convert the contents of a string or a file to a MarkdownI…
+ConvertFrom-StringData    Converts a string containing one or more key and value pa…
+ConvertTo-Csv             Converts .NET objects into a series of character-separate…
+ConvertTo-Html            Converts .NET objects into HTML that can be displayed in …
+ConvertTo-Json            Converts an object to a JSON-formatted string.
+ConvertTo-Xml             Creates an XML-based representation of an object.
+ConvertTo-SecureString    ConvertTo-SecureString…
+ConvertFrom-SecureString  ConvertFrom-SecureString…
+```
+
+To save some typing, we'll define two new aliases:
+
+```
+PS1> Set-Alias fromjson ConvertFrom-Json
+PS1> Set-Alias tojson ConvertTo-Json
+```
+
+.Aliases and parameter abbreviations
+****
+NOTE: You can list the aliases defined in your shell with `Get-Alias` (`gal`).
+Use the `Definition` parameter to see the alias for a particular command or wildcard.
+
+```
+PS1> gal -definition *-Alias
+
+CommandType     Name                                   Version    Source
+-----------     ----                                   -------    ------
+Alias           epal -> Export-Alias
+Alias           gal -> Get-Alias
+Alias           ipal -> Import-Alias
+Alias           nal -> New-Alias
+Alias           sal -> Set-Alias
+```
+
+NOTE: Parameter names in PowerShell can be abbreviated provided the abbreviation is unambiguous.
+
+```
+PS1> gal -d Get-Alias # -de, -def, etc. would all work too
+
+CommandType     Name
+-----------     ----
+Alias           gal -> Get-Alias
+```
+
+I'll try to introduce commands using both the full name and a default alias but I'll stick to the shorter form from then on.
+I'll also be abbreviating parameter names liberally.
+****
+
+As you'd expect, `fromjson` converts a JSON string into a PowerShell object; `tojson` converts a PowerShell object into a JSON string.
+`tojson` pretty prints by default so you can prettify an existing document by round-tripping through the two commands.
+
+```
+PS1> '{"key1":{"key2":"value1"}}' | fromjson | tojson
+{
+  "key1": {
+    "key2": "value1"
+  }
+}
+```
+
+NOTE: Text surrounded in quotes is interpreted as a string expression so there's no need to use `echo` here as you might in `bash`.
+You can if you like, of course.
+
+Alternately, you can use the `Compress` switch to remove unnecessary whitespace and indentation.
+
+```
+PS1> echo '{ "key1": { "key2": "value1" }}' | fromjson | tojson -c
+{"key1":{"key2":"value1"}}
+```
+
+****
+TIP: `ConvertTo-Json` has a default serialisation depth of two.
+If you exceed it, you'll see a warning in the console which you can override with the `Depth` parameter.
+
+```
+PS1> @{ one = @{ two = @{ three = @{}  } } } | tojson
+WARNING: Resulting JSON is truncated as serialization has exceeded the set depth
+of 2.
+{
+  "one": {
+    "two": {
+      "three": "System.Collections.Hashtable"
+    }
+  }
+}
+
+PS1> @{ one = @{ two = @{ three = @{} } } } | tojson -d 3
+{
+  "one": {
+    "two": {
+      "three": {}
+    }
+  }
+}
+```
+****
+
+
+== Objects and properties
+
+We'll use the Github repository API for sample data and https://curl.se/[`curl`] for fetching it, just like the `jq` primer.
+
+If you're stuck on a very old version of Windows, without `curl` installed, then you could use PowerShell's native
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/invoke-webrequest[`Invoke‑WebRequest`] (`iwr`) or
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/invoke-restmethod[`Invoke‑RestMethod`] (`irm`) instead.
+(`irm` would even parse the JSON responses for us automatically.)
+
+The string `curl` returns looks like this:
+
+```
+PS1> curl https://api.github.com/repos/stedolan/jq
+{
+  "id": 5101141,
+  "node_id": "MDEwOlJlcG9zaXRvcnk1MTAxMTQx",
+  "name": "jq",
+  "full_name": "stedolan/jq",
+  "private": false,
+  "owner": {
+    "login": "stedolan",
+    "id": 79765,
+    ...
+  },
+  "open_issues_count": 684,
+  "license": {
+    "key": "other",
+    "name": "Other",
+    "spdx_id": "NOASSERTION",
+    "url": null,
+    "node_id": "MDc6TGljZW5zZTA="
+  },
+  "forks": 1197,
+  "open_issues": 684,
+  "watchers": 20099,
+  "default_branch": "master",
+  "temp_clone_token": null,
+  "network_count": 1197,
+  "subscribers_count": 318
+}
+```
+
+Powershell's `Select-Object` (`select`) can project objects as they flow through the
+https://docs.microsoft.com/en-us/powershell/scripting/learn/ps101/04-pipelines[pipeline].
+This is particularly useful for processing collections, as we'll see later, but it also works for single objects.
+
+TIP: The `select` command is so common in PowerShell that you might consider aliasing it to something more pithy like `s`.
+
+Here's how we could select just the `name` property from the source object.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq | fromjson | select name
+
+name
+----
+jq
+```
+
+Note that this returns a new object with a single property, `name`.
+If we want the name as a string value then we can use the `ExpandProperty` parameter.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq | fromjson | select -exp name
+
+jq
+```
+
+Similarly, to select the value of the owner property.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq | fromjson | select -exp owner
+
+login               : stedolan
+id                  : 79765
+node_id             : MDQ6VXNlcjc5NzY1
+avatar_url          : https://avatars.githubusercontent.com/u/79765?v=4
+gravatar_id         :
+url                 : https://api.github.com/users/stedolan
+html_url            : https://github.com/stedolan
+followers_url       : https://api.github.com/users/stedolan/followers
+following_url       : https://api.github.com/users/stedolan/following{/other_user}
+gists_url           : https://api.github.com/users/stedolan/gists{/gist_id}
+starred_url         : https://api.github.com/users/stedolan/starred{/owner}{/repo}
+subscriptions_url   : https://api.github.com/users/stedolan/subscriptions
+organizations_url   : https://api.github.com/users/stedolan/orgs
+repos_url           : https://api.github.com/users/stedolan/repos
+events_url          : https://api.github.com/users/stedolan/events{/privacy}
+received_events_url : https://api.github.com/users/stedolan/received_events
+type                : User
+site_admin          : False
+```
+
+Provide multiple names to select multiple properties.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq |
+PS1>> fromjson |
+PS1>> select id, name, full_name
+
+     id name full_name
+     -- ---- ---------
+5101141 jq   stedolan/jq
+```
+
+Specify a https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_wildcards[wildcard] if needed.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq | fromjson | select *_at
+
+created_at            updated_at           pushed_at
+----------            ----------           ---------
+18/07/2012 7:57:25 PM 1/09/2021 3:49:35 AM 26/08/2021 3:56:06 PM
+```
+
+Use `Get-Member` (`gm`) with the `MemberType` parameter to list all of the available properties.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq | fromjson | gm -m NoteProperty
+
+   TypeName: System.Management.Automation.PSCustomObject
+
+Name           MemberType   Definition
+----           ----------   ----------
+allow_forking  NoteProperty bool allow_forking=True
+archived       NoteProperty bool archived=False
+archive_url    NoteProperty string archive_url=https://api.github.com/repos/stedolan/…
+assignees_url  NoteProperty string assignees_url=https://api.github.com/repos/stedola…
+blobs_url      NoteProperty string blobs_url=https://api.github.com/repos/stedolan/jq…
+branches_url   NoteProperty string branches_url=https://api.github.com/repos/stedolan…
+clone_url      NoteProperty string clone_url=https://github.com/stedolan/jq.git
+...
+```
+
+Drill through properties by chaining select commands.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq | fromjson |
+PS1>> select -exp owner |
+PS1>> select login
+
+login
+-----
+stedolan
+```
+
+You can also use what PowerShell calls a
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_calculated_properties['calculated property'].
+The curly braces delimit an https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_script_blocks[anonymous function]
+and `$_` refers to the object piped from the previous command.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq | fromjson |
+PS1>> select { $_.owner.login }
+
+$_.owner.login
+--------------
+stedolan
+```
+
+Another approach is to access members of the `fromjson` output directly, rather than piping into `select`.
+
+```
+PS1> (curl -s https://api.github.com/repos/stedolan/jq | fromjson).owner.login
+stedolan
+```
+
+Or assign the output of `fromjson` to a variable in order to explore the object using PSReadLine's interactive autocompletion.
+
+++++
+<div class="listingblock">
+  <pre class="highlight">
+    <code class="terminal">
+      <div>
+        <span class="prompt tok-gp">❯ </span>
+        <span class="tok-n">$jq </span>
+        <span class="tok-n">= </span>
+        <span class="tok-n">curl -s </span>
+        <span class="tok-n">https://api.github.com/repos/stedolan/jq | </span>
+        <span class="tok-n">fromjson</span>
+      </div>
+      <div>
+        <span class="prompt tok-gp">❯ </span>
+        <span class="tok-n">$jq</span>
+        <span class="tok-n">.</span>
+        <span class="tok-n">owner</span>
+        <span class="tok-n">.</span>
+        <span style="background-color:var(--nord7);color:var(--nord4)">login</span>
+      </div>
+      <span class="tok-go">
+avatar_url           gravatar_id          organizations_url    subscriptions_url
+events_url           html_url             received_events_url  type
+followers_url        id                   repos_url            url
+following_url        </span><span style="background-color:var(--nord7);color:var(--nord4);border-radius:2px">login                </span><span class="tok-go">site_admin           Equals
+gists_url            node_id              starred_url          GetHashCode</span>
+      <span style="color:var(--nord10)">
+
+string login=stedolan</span></code></pre> </div>
+++++
+
+****
+TIP: Try binding the tab key to menu-complete and enabling tooltips for an optimal completion experience.
+```
+PS1> Set-PSReadLineKeyHandler -Key Tab -Function MenuComplete
+PS1> Set-PSReadLineOption -ShowToolTips
+```
+
+You can persist those options by adding them to your `$PROFILE`.
+```
+PS1> $profile
+/home/nick/.config/powershell/Microsoft.PowerShell_profile.ps1
+
+PS1> '',
+PS1>> 'Set-PSReadLineKeyHandler -Key Tab -Function MenuComplete',
+PS1>> 'Set-PSReadLineOption -ShowToolTips' >> $PROFILE
+```
+****
+
+== Selecting items
+
+If you curl the GitHub Issues API, you will get back an array of issues:
+
+```
+PS1> curl https://api.github.com/repos/stedolan/jq/issues
+[
+  {
+    "url": "https://api.github.com/repos/stedolan/jq/issues/2343",
+    "repository_url": "https://api.github.com/repos/stedolan/jq",
+    "labels_url": "https://api.github.com/repos/stedolan/jq/issues/2343/labels{/name}",
+    "comments_url": "https://api.github.com/repos/stedolan/jq/issues/2343/comments",
+    "events_url": "https://api.github.com/repos/stedolan/jq/issues/2343/events",
+    "html_url": "https://github.com/stedolan/jq/pull/2343",
+    "id": 980405039,
+    "node_id": "MDExOlB1bGxSZXF1ZXN0NzIwNjQ5NTM5",
+    "number": 2343,
+    "title": "docs(manual): fix the typo errors in the manual",
+    "user": {
+      "login": "meizhaohui",
+      "id": 18098773,
+      ...
+    }
+  },
+  ...
+]
+```
+
+To select a particular index in the array you might use the `index` parameter of the `Select-Object` command.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson | select -Index 4
+
+url              : https://api.github.com/repos/stedolan/jq/issues/2337
+repository_url   : https://api.github.com/repos/stedolan/jq
+labels_url       : https://api.github.com/repos/stedolan/jq/issues/2337/labels{/name}
+comments_url     : https://api.github.com/repos/stedolan/jq/issues/2337/comments
+events_url       : https://api.github.com/repos/stedolan/jq/issues/2337/events
+html_url         : https://github.com/stedolan/jq/issues/2337
+id               : 955350543
+node_id          : MDU6SXNzdWU5NTUzNTA1NDM=
+number           : 2337
+title            : Release 1.6 does not have pre-autoreconf'ed configure script
+...
+```
+
+Or you could use the Powershell array indexing syntax.
+
+```
+PS1> (curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson)[4]
+
+url              : https://api.github.com/repos/stedolan/jq/issues/2337
+repository_url   : https://api.github.com/repos/stedolan/jq
+labels_url       : https://api.github.com/repos/stedolan/jq/issues/2337/labels{/name}
+comments_url     : https://api.github.com/repos/stedolan/jq/issues/2337/comments
+events_url       : https://api.github.com/repos/stedolan/jq/issues/2337/events
+html_url         : https://github.com/stedolan/jq/issues/2337
+id               : 955350543
+node_id          : MDU6SXNzdWU5NTUzNTA1NDM=
+number           : 2337
+...
+```
+
+[%collapsible]
+.Arrays in more detail
+====
+
+PowerShell arrays are documented in detail
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_arrays[here] and
+https://docs.microsoft.com/en-us/powershell/scripting/learn/deep-dives/everything-about-arrays[here].
+Given an array, `$a = 1..5`, you can use the array indexing syntax to:
+
+```
+PS1> $a[4] # select an index
+5
+
+PS1> $a[0,4] # or multiple indices
+1
+5
+
+PS1> $a[2..4] # select a range of indices
+3
+4
+5
+
+PS1> $a[4..2] # or a reverse range
+5
+4
+3
+
+PS1> $a[0..1+3..4] # or multiple ranges
+1
+2
+4
+5
+
+PS1> $a[0,1+3..4] # or a mixture of indices and ranges
+1
+2
+4
+5
+```
+
+Alternately, you can use `Select-Object` (`select`). Per the
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/select-object[documentation]:
+
+> To select objects from a collection, use the `First`, `Last`, `Unique`, `Skip`, and `Index` parameters.
+
+Again, a few examples given the array `$a = 1..5`.
+
+```
+PS1> $a | select -first 2 # take the first two items
+1
+2
+
+PS1> $a | select -last 2 # take the last two items
+4
+5
+
+PS1> $a | select -Skip 2 -f 2 # take the third to fourth items
+3
+4
+
+PS1> $a | select -Index 0,1 # take items at positions 0 and 1
+1
+2
+
+PS1> $a+$a # from the array `1,2,3,4,5,1,2,3,4,5`
+PS1>> | select -uniq # select distinct items
+1
+2
+3
+4
+5
+```
+====
+
+== Projecting fields
+
+Projecting fields from a collection using `select` works just like it does for a single object;
+the output is a new collection of objects.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson | select title
+
+title
+-----
+Serious sync issues
+docs(manual): fix the typo errors in the manual
+Grammar railroad diagram
+Question about license.
+visibility of wiki pages
+...
+``` 
+
+Multiple fields work the same way too.
+This example emits an array of objects with the properties `title` and `number`.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> select title, number
+
+title                                           number
+-----                                           ------
+Serious sync issues                               2344
+docs(manual): fix the typo errors in the manual   2343
+Grammar railroad diagram                          2342
+Question about license.                           2341
+visibility of wiki pages                          2340
+...
+```
+
+Transforming our new collection to JSON is - as you might imagine - as simple as piping into our `tojson` alias.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> select title, number | tojson
+[
+  {
+    "title": "Serious sync issues",
+    "number": 2344
+  },
+  {
+    "title": "docs(manual): fix the typo errors in the manual",
+    "number": 2343
+  },
+  {
+    "title": "Grammar railroad diagram",
+    "number": 2342
+  },
+  {
+    "title": "Question about license.",
+    "number": 2341
+  },
+  {
+    "title": "visibility of wiki pages",
+    "number": 2340
+  }
+  ...
+]
+```
+
+We can actually choose from a number of different output formats.
+
+```
+PS1> $issues = curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> select title, number
+PS1>> $issues | ConvertTo-Html -Fragment
+<table>
+<colgroup><col/><col/></colgroup>
+<tr><th>title</th><th>number</th></tr>
+<tr><td>Serious sync issues</td><td>2344</td></tr>
+<tr><td>docs(manual): fix the typo errors in the manual</td><td>2343</td></tr>
+<tr><td>Grammar railroad diagram</td><td>2342</td></tr>
+<tr><td>Question about license.</td><td>2341</td></tr>
+<tr><td>visibility of wiki pages</td><td>2340</td></tr>
+...
+</table>
+
+PS1> $issues | ConvertTo-Csv
+"title","number"
+"Serious sync issues","2344"
+"docs(manual): fix the typo errors in the manual","2343"
+"Grammar railroad diagram","2342"
+"Question about license.","2341"
+"visibility of wiki pages","2340"
+...
+
+PS1> $issues | ConvertTo-Xml -As String -NoTypeInformation
+<?xml version="1.0" encoding="utf-8"?>
+<Objects>
+  <Object>
+    <Property Name="title">Serious sync issues</Property>
+    <Property Name="number">2344</Property>
+  </Object>
+  <Object>
+    <Property Name="title">docs(manual): fix the typo errors in the manual</Property>
+    <Property Name="number">2343</Property>
+  </Object>
+  <Object>
+    <Property Name="title">Grammar railroad diagram</Property>
+    <Property Name="number">2342</Property>
+  </Object>
+  <Object>
+    <Property Name="title">Question about license.</Property>
+    <Property Name="number">2341</Property>
+  </Object>
+  <Object>
+    <Property Name="title">visibility of wiki pages</Property>
+    <Property Name="number">2340</Property>
+  </Object>
+  ...
+</Objects>
+```
+
+== Sorting
+
+To sort a simple collection, just pipe it straight into
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/sort-object[`Sort-Object`] (`sort`).
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> select -f 5 -exp title | sort
+
+docs(manual): fix the typo errors in the manual
+Grammar railroad diagram
+Question about license.
+Serious sync issues
+visibility of wiki pages
+```
+
+Use the `Property` parameter to specify properties to sort on for complex objects.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> select title, number | sort title
+
+title                                           number
+-----                                           ------
+docs(manual): fix the typo errors in the manual   2343
+Grammar railroad diagram                          2342
+Question about license.                           2341
+Serious sync issues                               2344
+visibility of wiki pages                          2340
+...
+```
+
+Specify the `Descending` switch to flip the order.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> select title | sort title -desc
+
+title                                           number
+-----                                           ------
+visibility of wiki pages                          2340
+Serious sync issues                               2344
+Question about license.                           2341
+Grammar railroad diagram                          2342
+docs(manual): fix the typo errors in the manual   2343
+...
+```
+
+You can narrow the search by selecting only the `Top` or `Bottom` _n_ items.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> select title, number | sort number -top 3
+
+title                                                       number
+-----                                                       ------
+Bump lxml from 4.3.1 to 4.6.3 in /docs                        2295
+Use a regex to parse ISO8601 dates                            2296
+[Feature] support no_color env to disable ansi_color output   2297
+```
+
+Using `-Top 1` or `-Bottom 1` you can find the maximum or minimum values in a collection.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> select number | sort -top 1
+
+number
+------
+  2344
+```
+
+== Grouping
+
+Having used `sort`, it should be easy to guess how
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/group-object[`Group-Object`] (`group`) works.
+
+To group a collection of primitives (or objects of https://docs.microsoft.com/en-us/dotnet/api/system.icomparable[`IComparable`]), pipe them into `group`.
+This returns a new array of objects with the properties `Count`, `Name` and `Group`.
+The `Group` property contains the original items that make up each group.
+
+```
+PS1> 'a','b','a','c','a' | group
+
+Count Name                      Group
+----- ----                      -----
+    3 a                         {a, a, a}
+    1 b                         {b}
+    1 c                         {c}
+```
+
+Use the `Property` parameter to group complex objects. You'll often use a calculated property here.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> group -prop {$_.user.login} | sort Count -desc | select -f 5 Count, Name
+
+Count Name
+----- ----
+    3 pkoppstein
+    2 wader
+    1 ajmalton
+    1 strugee
+    1 stoat1
+```
+
+An alternative output format is available via the `AsHashTable` switch.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> group -prop {$_.user.login} -AsHashTable
+
+Name           Value
+----           -----
+scottyob       {@{url=https://api.github.com/repos/stedolan/jq/issues/2327;…
+henrebotha     {@{url=https://api.github.com/repos/stedolan/jq/issues/2336;…
+nicowilliams   {@{url=https://api.github.com/repos/stedolan/jq/issues/2360;…
+```
+
+This is a pretty handy way to re-key some JSON by a given grouping.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> group -prop {$_.user.login} -AsHashTable | tojson -d 3
+{
+  "scottyob": [
+    {
+      "url": "https://api.github.com/repos/stedolan/jq/issues/2327",
+      "repository_url": "https://api.github.com/repos/stedolan/jq",
+      "labels_url": "https://api.github.com/repos/stedolan/jq/issues/2327/labels{/name}",
+      "comments_url": "https://api.github.com/repos/stedolan/jq/issues/2327/comments",
+      "events_url": "https://api.github.com/repos/stedolan/jq/issues/2327/events",
+      "html_url": "https://github.com/stedolan/jq/issues/2327",
+      "id": 919033948,
+      "node_id": "MDU6SXNzdWU5MTkwMzM5NDg=",
+      "number": 2327,
+      "title": "Can we get a new release?",
+      ...
+    }
+  ]
+}
+```
+
+== Counting and measuring
+
+You can use either `Count` or `Length` to get the length of a PowerShell array.
+
+```
+PS1> $xs = curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson
+PS1> $xs.Count
+30
+
+PS1> $xs = curl -s https://api.github.com/repos/stedolan/jq/issues?per_page=50 | fromjson
+PS1> $xs.Length
+50
+```
+
+A variety of measurements are available via the `Measure-Object` (`measure`) command.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson | measure
+
+Count             : 30
+Average           :
+Sum               :
+Maximum           :
+Minimum           :
+StandardDeviation :
+Property          :
+
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> measure created_at -min | select min*
+
+Minimum
+-------
+21/05/2021 7:17:39 PM
+
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> measure created_at -max | select max*
+
+Maximum
+-------
+27/10/2021 5:20:17 PM
+
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> measure created_at -min -max | select Minimum, Maximum
+
+Minimum                Maximum
+-------                -------
+21/05/2021 7:17:39 PM  27/10/2021 5:20:17 PM
+```
+
+Obviously, the statistical measurements - average, sum, std deviation - only really make sense for numerical data.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> select {$_.reactions.total_count} | measure -AllStats *
+
+Count             : 30
+Average           : 0.8
+Sum               : 24
+Maximum           : 13  
+Minimum           : 0
+StandardDeviation : 2.4691196253195
+Property          : $_.reactions.total_count
+```
+
+Word, line and character counts are available for textual data.
+
+```
+PS1> curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> measure body -Word -Line -Character
+
+Lines Words Characters Property
+----- ----- ---------- --------
+  556  2151      17483 body
+```
+
+== Filtering
+
+Data in a PowerShell pipeline is filtered using the `Where-Object` (`where` or `?`) command.
+
+When given no arguments other than a property name, it filters a sequence for objects where that property is
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_booleans[`truthy`].
+
+```
+PS1> curl https://api.github.com/repos/stedolan/jq/issues?per_page=100 -s | fromjson |
+PS1>> where labels | select number, title
+
+number title
+------ -----
+  2206 Debugging help through showing pipeline intermediates.
+```
+
+You can also use a https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_comparison_operators[comparison] expression.
+
+NOTE: Like `bash`, PowerShell uses dash prefixed operators such as `-gt` and `-lt`.
+Unlike `bash`, it's not possible to use mathematical operators like `>` and `<` inside double parentheses.
+
+```
+PS1> curl https://api.github.com/repos/stedolan/jq/issues -s | fromjson |
+PS1>> where comments -gt 1 | select number, title, comments
+
+number title                                             comments
+------ -----                                             --------
+  2354 gsub lookahead cannot allocate memory                    2
+  2346 Could you enable the sponsor button on this repo?        2
+  2344 Serious sync issues                                      4
+  2333 Error: "corrupted double-linked list"                    3
+  2331 Strange behavior on output parsing                       2
+  2327 Can we get a new release?                                3
+  2326 jq foreachΣ╜┐τö¿Θù«Θóÿ                                   2
+  2322 Advice - How to filter                                   4
+  2320 Move the IRC channel to Libera.Chat                      2
+```
+
+You can chain `where` expressions.
+
+```
+PS1> curl https://api.github.com/repos/stedolan/jq/issues?per_page=100 -s | fromjson |
+PS1>> where comments -ge 1 | where title -Like a* | select number, title
+
+number title
+------ -----
+  2322 Advice - How to filter
+  2306 Added usage under Powershell to the manual
+  2305 About the jq's release process (Was: Is jq is still alive/maintained ?)
+  2285 Add in-place modification (expression) shorthand in objects
+  2255 Added a first fuzzer for integration with OSS-Fuzz.
+  2250 AppVeyor continuous integration tests all fail with GPG errors
+  2241 Added base/1 and unbase/1
+  2216 Add an example usage for the inputs builtin
+  2205 add nix and guix to website and fix typo in manual
+```
+
+And, of course, you can use calculated properties.
+
+```
+PS1> curl https://api.github.com/repos/stedolan/jq/issues -s | fromjson |
+PS1>> ? {$_.created_at -gt (get-date).AddDays(-7)} | select number, title
+
+number title
+------ -----
+  2366 Create jqfmt to format jq scripts
+  2365 Identify undefined values
+
+PS1> curl https://api.github.com/repos/stedolan/jq/issues -s | fromjson |
+PS1>> where {$_.reactions.'+1'} | select number, title
+
+number title
+------ -----
+  2346 Could you enable the sponsor button on this repo?
+  2334 Compile error messages don't provide column only line number
+  2332 Add --recursive to git clone
+  2327 Can we get a new release?
+  2320 Move the IRC channel to Libera.Chat
+```
+
+Like all of the commands in this article, `where` isn't only useful for JSON data.
+If we wanted to find files of a given size below the current directory, for example:
+
+```
+PS1> gci -File -Recurse | where Length -gt (1kb * 256) | select FullName
+
+FullName
+--------
+/home/nick/blog/build/images/dataflow.jpg
+/home/nick/blog/site/images/dataflow.jpg
+```
+
+== Conclusion
+
+We've seen how PowerShell can do the same sorts of things as `jq` and how it can help with everyday data munging more generally.
+If you have a .NET background then stick around for the bonus section -
+we'll look briefly at doing some of the same tasks via the BCL instead of PowerShell native equivalents.
+
+{empty} +
+
+.Postscript: Manipulating data with .NET
+[%collapsible]
+====
+
+Once the input has been parsed, you have the full power of
+https://docs.microsoft.com/en-us/dotnet/api/system.array[.NET arrays]
+and https://docs.microsoft.com/en-us/dotnet/api/system.linq.enumerable[enumerables] at your disposal.
+For example, to reverse an array in place:
+
+```
+PS1> $a = curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson |
+PS1>> select title, number | sort number -top 3
+PS1> $a
+
+title                                                       number
+-----                                                       ------
+Bump lxml from 4.3.1 to 4.6.3 in /docs                        2295
+Use a regex to parse ISO8601 dates                            2296
+[Feature] support no_color env to disable ansi_color output   2297
+
+PS1> [array]::Reverse($a)
+PS1> $a
+
+title                                                       number
+-----                                                       ------
+[Feature] support no_color env to disable ansi_color output   2297
+Use a regex to parse ISO8601 dates                            2296
+Bump lxml from 4.3.1 to 4.6.3 in /docs                        2295
+```
+
+Or to find all of the objects matching a given predicate.
+
+```
+PS1> [array]::FindAll(
+PS1>> $a, [Predicate[Object]]{ $args[0].number -gt 2295 })
+
+title                                                       number
+-----                                                       ------
+[Feature] support no_color env to disable ansi_color output   2297
+Use a regex to parse ISO8601 dates                            2296
+```
+
+Notice that the predicate is given using a PowerShell script block -
+an anonymous function delimited by curly braces - and an ugly cast to `[Predicate[Object]]`.
+
+Here's the same example using `IEnumerable.Where()` instead of `Array.FindAll`.
+
+```
+PS1> [System.Linq.Enumerable]::Where(
+PS1>> $a, [Func[Object,bool]] { $args[0].number -gt 2295 })
+
+title                                                       number
+-----                                                       ------
+[Feature] support no_color env to disable ansi_color output   2297
+Use a regex to parse ISO8601 dates                            2296
+```
+
+TIP: You can bring a namespace into scope with the
+https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_using#namespace-syntax[`using`] keyword.
+Alternatively, you can lean on PowerShell's autocompletion which will offer to complete type names inside square braces.
+
+```
+PS1> using namespace System.Linq
+PS1> [Enumerable]::Where(PS1>> $a, [Func[Object,bool]] { $args[0].number -gt 2295 })
+
+title                                                       number
+-----                                                       ------
+[Feature] support no_color env to disable ansi_color output   2297
+Use a regex to parse ISO8601 dates                            2296
+```
+
+Here's an example using LINQ's `Sum` method.
+
+```
+PS1> $a = curl -s https://api.github.com/repos/stedolan/jq/issues | fromjson
+PS1> [System.Linq.Enumerable]::Sum([int[]] $a.comments)
+29
+```
+
+And the same example using `Aggregate` (i.e. fold).
+
+```
+PS1> [System.Linq.Enumerable]::Aggregate(
+PS1>>  $a, 0, [Func [int, object, int]] { $args[0] + $args[1].comments })
+29
+```
+
+If you find yourself having to cast to the same type repeatedly, you can save some typing by adding a type alias.
+PowerShell refers to these as https://docs.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_type_accelerators['type accelerators'] -
+the `[array]` above is a good example.
+Here we add an accelerator for the predicate type, `[Func [Object, bool]]` and use it with `Enumerable.First`.
+
+```
+PS1> $ta = [PowerShell].Assembly.GetTypes() |? Name -eq 'TypeAccelerators'
+PS1> $ta::Add('pfunc', [Func[Object,bool]])
+PS1> [System.Linq.Enumerable]::First($a, [pfunc]{$args[0].number -gt 2295})
+
+title                              number
+-----                              ------
+Use a regex to parse ISO8601 dates   2296
+```
+
+There's a great https://www.red-gate.com/simple-talk/development/dotnet-development/high-performance-powershell-linq[reference]
+by Michael Sorens demonstrating various LINQ methods in PowerShell along with comparisons to PowerShell native equivalents.
+====
+
+[#footer]
+Header image https://www.flickr.com/photos/46376861@N00/2304677965[A Brugger]
